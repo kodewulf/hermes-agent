@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "15 5 * * *"
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -11,6 +14,7 @@ permissions:
 jobs:
   sync-main:
     name: Force-sync main from upstream
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Sync main
@@ -31,9 +35,11 @@ jobs:
     steps:
       - name: Check custom-yaml-themes rebases
         shell: bash
+        env:
+          BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || 'custom-yaml-themes' }}
         run: |
           set -euo pipefail
-          branch="custom-yaml-themes"
+          branch="${BRANCH}"
           git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
           cd repo
           git remote add upstream https://github.com/NousResearch/hermes-agent.git
