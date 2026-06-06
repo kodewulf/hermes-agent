@@ -4973,6 +4973,34 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:themes:listDashboard', async () => {
+  const themesDir = path.join(HERMES_HOME, 'dashboard-themes')
+
+  try {
+    const entries = await fs.promises.readdir(themesDir, { withFileTypes: true })
+    const themes = []
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.ya?ml$/i.test(entry.name)) {
+        continue
+      }
+
+      const name = path.basename(entry.name).replace(/\.ya?ml$/i, '')
+      const filePath = path.join(themesDir, entry.name)
+
+      try {
+        themes.push({ name, source: await fs.promises.readFile(filePath, 'utf8') })
+      } catch (err) {
+        rememberLog(`[themes] failed to load ${filePath}: ${err.message || err}`)
+      }
+    }
+
+    return themes
+  } catch {
+    return []
+  }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')

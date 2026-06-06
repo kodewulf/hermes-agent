@@ -8,12 +8,13 @@ import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
+import type { DesktopTheme } from '@/themes/types'
 
 import { MODE_OPTIONS } from './constants'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
 
-function ThemePreview({ name }: { name: string }) {
-  const t = BUILTIN_THEMES[name]
+function ThemePreview({ definition, name }: { definition?: DesktopTheme; name: string }) {
+  const t = definition ?? BUILTIN_THEMES[name]
 
   if (!t) {
     return null
@@ -246,7 +247,7 @@ export function AppearanceSettings() {
                   }}
                   type="button"
                 >
-                  <ThemePreview name={theme.name} />
+                  <ThemePreview definition={theme.definition} name={theme.name} />
                   <div className="mt-3 flex items-start justify-between gap-3 px-1">
                     <div className="min-w-0">
                       <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">

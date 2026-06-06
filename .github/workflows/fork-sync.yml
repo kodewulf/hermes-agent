@@ -1,0 +1,43 @@
+name: Fork Sync
+
+on:
+  schedule:
+    - cron: "15 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-main:
+    name: Force-sync main from upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream main
+          git checkout main
+          git reset --hard upstream/main
+          git push --force-with-lease origin main
+
+  rebase-check:
+    name: Rebase-check custom theme branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check custom-yaml-themes rebases
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="custom-yaml-themes"
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch origin "$branch"
+          git fetch upstream main
+          git checkout -B "$branch" "origin/$branch"
+          git rebase upstream/main

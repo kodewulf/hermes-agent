@@ -75,6 +75,7 @@
     "hast-util-from-html-isomorphic": "^2.0.0",
     "hast-util-to-text": "^4.0.2",
     "ignore": "^7.0.5",
+    "js-yaml": "^4.1.0",
     "katex": "^0.16.45",
     "leva": "^0.10.1",
     "motion": "^12.38.0",

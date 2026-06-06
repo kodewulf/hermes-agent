@@ -48,10 +48,14 @@ export interface DesktopThemeColors {
 }
 
 export interface DesktopThemeTypography {
+  /** Root CSS font size. Dashboard YAML themes use this for UI scaling. */
+  baseSize?: string
   fontSans: string
   fontMono: string
   /** Google/Bunny/self-hosted font stylesheet URL. */
   fontUrl?: string
+  letterSpacing?: string
+  lineHeight?: number | string
 }
 
 export interface DesktopTheme {

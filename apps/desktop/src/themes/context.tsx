@@ -9,6 +9,7 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
+import { load as loadYaml } from 'js-yaml'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
@@ -19,6 +20,10 @@ import type { DesktopTheme, DesktopThemeColors } from './types'
 const SKIN_KEY = 'hermes-desktop-theme-v2'
 const MODE_KEY = 'hermes-desktop-mode-v1'
 const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
+const YAML_THEME_EXT = /\.ya?ml$/i
+
+declare const require: undefined | ((id: string) => unknown)
+declare const process: undefined | { env: Record<string, string | undefined> }
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -28,7 +33,196 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
 const normalizeSkin = (name: string | null | undefined): string =>
-  name && BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+
+type ThemeListItem = { name: string; label: string; description: string; definition?: DesktopTheme }
+type RawThemeRecord = Record<string, unknown>
+interface FsModule {
+  existsSync: (path: string) => boolean
+  readFileSync: (path: string, encoding: 'utf8') => string
+  readdirSync: (path: string) => string[]
+}
+
+const CUSTOM_THEMES = new Map<string, DesktopTheme>()
+interface PathModule {
+  basename: (path: string) => string
+  join: (...parts: string[]) => string
+}
+
+const titleCase = (name: string) =>
+  name
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+
+const stringValue = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null)
+
+function layerHex(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value && typeof value === 'object') {
+    return stringValue((value as Record<string, unknown>).hex)
+  }
+
+  return null
+}
+
+function themeFromRaw(raw: RawThemeRecord, fallbackName: string): DesktopTheme | null {
+  const name = stringValue(raw.name) || fallbackName
+  const colors = raw.colors && typeof raw.colors === 'object' ? (raw.colors as DesktopThemeColors) : null
+
+  if (colors) {
+    return {
+      name,
+      label: stringValue(raw.label) || titleCase(name),
+      description: stringValue(raw.description) || 'Custom dashboard theme',
+      colors,
+      darkColors: raw.darkColors && typeof raw.darkColors === 'object' ? (raw.darkColors as DesktopThemeColors) : undefined,
+      typography: raw.typography && typeof raw.typography === 'object' ? raw.typography : undefined
+    }
+  }
+
+  const palette = raw.palette && typeof raw.palette === 'object' ? (raw.palette as Record<string, unknown>) : null
+
+  if (!palette) {
+    return null
+  }
+
+  const background = layerHex(palette.background) || '#08081c'
+  const midground = layerHex(palette.midground) || '#8b80e8'
+  const foreground = layerHex(palette.foreground) || midground
+  const soft = mix(background, midground, 0.16)
+  const softer = mix(background, midground, 0.1)
+  const border = mix(background, midground, 0.34)
+
+  return {
+    name,
+    label: stringValue(raw.label) || titleCase(name),
+    description: stringValue(raw.description) || 'Custom dashboard theme',
+    colors: {
+      background,
+      foreground,
+      card: mix(background, midground, 0.08),
+      cardForeground: foreground,
+      muted: softer,
+      mutedForeground: mix(foreground, background, 0.42),
+      popover: mix(background, midground, 0.12),
+      popoverForeground: foreground,
+      primary: midground,
+      primaryForeground: readableOn(midground),
+      secondary: soft,
+      secondaryForeground: foreground,
+      accent: soft,
+      accentForeground: foreground,
+      border,
+      input: border,
+      ring: midground,
+      midground,
+      midgroundForeground: readableOn(midground),
+      composerRing: midground,
+      destructive: '#b03060',
+      destructiveForeground: '#fef2f2',
+      sidebarBackground: mix(background, '#000000', 0.18),
+      sidebarBorder: mix(background, midground, 0.22),
+      userBubble: soft,
+      userBubbleBorder: border
+    },
+    typography: raw.typography && typeof raw.typography === 'object' ? raw.typography : undefined
+  }
+}
+
+function lazyRequire<T = unknown>(id: string): T | null {
+  try {
+    if (typeof require === 'undefined') {
+      return null
+    }
+
+    return require(id) as T
+  } catch {
+    return null
+  }
+}
+
+function getYamlThemesDir(): string | null {
+  const path = lazyRequire<PathModule>('path')
+
+  if (!path || typeof process === 'undefined') {
+    return null
+  }
+
+  const hermesHome = process.env.HERMES_HOME || path.join(process.env.USERPROFILE || process.env.HOME || '', '.hermes')
+
+  return hermesHome ? path.join(hermesHome, 'dashboard-themes') : null
+}
+
+function loadYamlTheme(name: string): DesktopTheme | null {
+  if (RETIRED_SKINS.has(name)) {
+    return null
+  }
+
+  const registered = CUSTOM_THEMES.get(name)
+
+  if (registered) {
+    return registered
+  }
+
+  const fs = lazyRequire<FsModule>('fs')
+  const path = lazyRequire<PathModule>('path')
+  const yaml = lazyRequire<{ load: (source: string) => unknown }>('js-yaml')
+  const themesDir = getYamlThemesDir()
+
+  if (!fs || !path || !yaml || !themesDir) {
+    return null
+  }
+
+  const candidates = [path.join(themesDir, `${name}.yaml`), path.join(themesDir, `${name}.yml`)]
+  const themePath = candidates.find(candidate => fs.existsSync(candidate))
+
+  if (!themePath) {
+    return null
+  }
+
+  try {
+    const parsed = yaml.load(fs.readFileSync(themePath, 'utf8')) as RawThemeRecord | null
+
+    return parsed && typeof parsed === 'object' ? themeFromRaw(parsed, name) : null
+  } catch {
+    return null
+  }
+}
+
+function listYamlThemes(): ThemeListItem[] {
+  const fs = lazyRequire<FsModule>('fs')
+  const path = lazyRequire<PathModule>('path')
+  const themesDir = getYamlThemesDir()
+
+  if (!fs || !path || !themesDir || !fs.existsSync(themesDir)) {
+    return []
+  }
+
+  try {
+    return fs
+      .readdirSync(themesDir)
+      .filter(file => YAML_THEME_EXT.test(file))
+      .map(file => path.basename(file).replace(YAML_THEME_EXT, ''))
+      .filter(name => !RETIRED_SKINS.has(name))
+      .map(name => {
+        const definition = loadYamlTheme(name) ?? undefined
+
+        return {
+          name,
+          label: definition?.label || titleCase(name),
+          description: definition?.description || 'Custom dashboard theme',
+          definition
+        }
+      })
+  } catch {
+    return []
+  }
+}
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
 
@@ -108,7 +302,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
 
 /** Returns the seed palette for a given skin + mode (no overrides applied). */
 export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
-  const seed = BUILTIN_THEMES[skinName] ?? nousTheme
+  const seed = BUILTIN_THEMES[skinName] ?? loadYamlTheme(skinName) ?? nousTheme
 
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
@@ -118,7 +312,7 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
 }
 
 function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
-  const seed = BUILTIN_THEMES[skinName] ?? nousTheme
+  const seed = BUILTIN_THEMES[skinName] ?? loadYamlTheme(skinName) ?? nousTheme
 
   return {
     ...seed,
@@ -207,8 +401,11 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-destructive-foreground': c.destructiveForeground,
     '--dt-sidebar-border': c.sidebarBorder ?? c.border,
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
+    '--dt-base-size': typo.baseSize ?? DEFAULT_TYPOGRAPHY.baseSize ?? '1rem',
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
+    '--dt-letter-spacing': typo.letterSpacing ?? DEFAULT_TYPOGRAPHY.letterSpacing ?? '0',
+    '--dt-line-height': String(typo.lineHeight ?? DEFAULT_TYPOGRAPHY.lineHeight ?? 1.5),
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
@@ -246,19 +443,31 @@ interface ThemeContextValue {
   themeName: string
   mode: ThemeMode
   resolvedMode: 'light' | 'dark'
-  availableThemes: Array<{ name: string; label: string; description: string }>
+  availableThemes: ThemeListItem[]
   setTheme: (name: string) => void
   setMode: (mode: ThemeMode) => void
 }
 
-const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
+const SKIN_LIST: ThemeListItem[] = BUILTIN_THEME_LIST.map(definition => ({
+  name: definition.name,
+  label: definition.label,
+  description: definition.description,
+  definition
+}))
+
+const YAML_THEME_LIST: ThemeListItem[] = listYamlThemes()
+
+export const ALL_SKINS: ThemeListItem[] = [
+  ...SKIN_LIST,
+  ...YAML_THEME_LIST.filter(theme => !BUILTIN_THEMES[theme.name])
+]
 
 const ThemeContext = createContext<ThemeContextValue>({
   theme: nousTheme,
   themeName: DEFAULT_SKIN_NAME,
   mode: 'light',
   resolvedMode: 'light',
-  availableThemes: SKIN_LIST,
+  availableThemes: ALL_SKINS,
   setTheme: () => {},
   setMode: () => {}
 })
@@ -274,9 +483,73 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
-  const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
+  const [availableThemes, setAvailableThemes] = useState(ALL_SKINS)
+  const [customThemeVersion, setCustomThemeVersion] = useState(0)
+
+  const activeTheme = useMemo(() => {
+    void customThemeVersion
+
+    return deriveTheme(themeName, resolvedMode)
+  }, [themeName, resolvedMode, customThemeVersion])
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+
+  useEffect(() => {
+    let cancelled = false
+
+    window.hermesDesktop
+      ?.listDashboardThemes?.()
+      .then(themes => {
+        if (cancelled) {
+          return
+        }
+
+        const customThemes = themes
+          .map((theme, index) => {
+            if (!theme || typeof theme !== 'object') {
+              return null
+            }
+
+            const { name, source } = theme as { name?: unknown; source?: unknown }
+            const fallbackName = stringValue(name) || `custom-${index}`
+
+            if (typeof source === 'string') {
+              try {
+                const parsed = loadYaml(source)
+
+                return parsed && typeof parsed === 'object' ? themeFromRaw(parsed as RawThemeRecord, fallbackName) : null
+              } catch {
+                return null
+              }
+            }
+
+            return themeFromRaw(theme as RawThemeRecord, fallbackName)
+          })
+          .filter((theme): theme is DesktopTheme => theme !== null && !RETIRED_SKINS.has(theme.name))
+
+        for (const theme of customThemes) {
+          CUSTOM_THEMES.set(theme.name, theme)
+        }
+
+        setAvailableThemes([
+          ...SKIN_LIST,
+          ...customThemes
+            .filter(theme => !BUILTIN_THEMES[theme.name])
+            .map(definition => ({
+              name: definition.name,
+              label: definition.label,
+              description: definition.description,
+              definition
+            }))
+        ])
+        setCustomThemeVersion(version => version + 1)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
@@ -315,8 +588,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [resolvedMode, setMode])
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme: activeTheme, themeName, mode, resolvedMode, availableThemes: SKIN_LIST, setTheme, setMode }),
-    [activeTheme, themeName, mode, resolvedMode, setTheme, setMode]
+    () => ({ theme: activeTheme, themeName, mode, resolvedMode, availableThemes, setTheme, setMode }),
+    [activeTheme, themeName, mode, resolvedMode, availableThemes, setTheme, setMode]
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
@@ -327,7 +600,7 @@ export const useTheme = (): ThemeContextValue => useContext(ThemeContext)
 /** Sync the desktop skin with the active Hermes backend theme on connect. */
 export function useSyncThemeFromBackend(backendThemeName: string | undefined, setTheme: (name: string) => void) {
   useEffect(() => {
-    if (backendThemeName && BUILTIN_THEMES[backendThemeName]) {
+    if (backendThemeName && !RETIRED_SKINS.has(backendThemeName)) {
       setTheme(backendThemeName)
     }
   }, [backendThemeName, setTheme])
