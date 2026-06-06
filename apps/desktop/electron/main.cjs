@@ -408,8 +408,13 @@ function previewFileMetadata(filePath, mimeType) {
 }
 
 app.setName(APP_NAME)
+// Seed the native About panel with the live Hermes version. This is refreshed
+// on every open via the explicit "About" menu handler (refreshAboutPanel), so
+// an in-place `hermes update` mid-session is reflected without an app restart;
+// the seed here just covers the first open and any non-menu invocation path.
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
+  applicationVersion: resolveHermesVersion(),
   copyright: 'Copyright © 2026 Nous Research'
 })
 
@@ -2981,7 +2986,7 @@ function buildApplicationMenu() {
     template.push({
       label: APP_NAME,
       submenu: [
-        { role: 'about', label: `About ${APP_NAME}` },
+        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
         { role: 'services' },
@@ -4968,6 +4973,34 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:themes:listDashboard', async () => {
+  const themesDir = path.join(HERMES_HOME, 'dashboard-themes')
+
+  try {
+    const entries = await fs.promises.readdir(themesDir, { withFileTypes: true })
+    const themes = []
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.ya?ml$/i.test(entry.name)) {
+        continue
+      }
+
+      const name = path.basename(entry.name).replace(/\.ya?ml$/i, '')
+      const filePath = path.join(themesDir, entry.name)
+
+      try {
+        themes.push({ name, source: await fs.promises.readFile(filePath, 'utf8') })
+      } catch (err) {
+        rememberLog(`[themes] failed to load ${filePath}: ${err.message || err}`)
+      }
+    }
+
+    return themes
+  } catch {
+    return []
+  }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
@@ -5371,6 +5404,19 @@ function resolveHermesVersion() {
     // Fall through to the Electron app version below.
   }
   return app.getVersion()
+}
+
+// Re-resolve the live Hermes version and push it into the native About panel
+// just before showing it, so an in-place `hermes update` is reflected without
+// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
+// other platforms don't use this menu item.
+function showAboutPanelFresh() {
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: resolveHermesVersion(),
+    copyright: 'Copyright © 2026 Nous Research'
+  })
+  app.showAboutPanel()
 }
 
 ipcMain.handle('hermes:version', async () => ({

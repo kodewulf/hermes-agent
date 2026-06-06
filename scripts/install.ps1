@@ -1020,6 +1020,35 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Checkout-PinnedCommit {
+    param(
+        [Parameter(Mandatory=$true)][string]$Commit,
+        [string]$Branch = ""
+    )
+
+    # Make sure we have the commit locally (a tag-less commit SHA isn't always
+    # reachable from any one branch fetch).
+    git -c windows.appendAtomically=false fetch origin $Commit
+    git -c windows.appendAtomically=false checkout --detach $Commit
+    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+
+    if (-not $Branch) { return }
+
+    # Desktop bootstraps pass both a pinned commit and the branch that produced
+    # it. Keep the exact commit pin, but avoid leaving a normal branch checkout
+    # detached when the local branch already points at that same commit.
+    $pinnedResolved = (git -c windows.appendAtomically=false rev-parse --verify HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) { return }
+
+    $branchResolved = (git -c windows.appendAtomically=false rev-parse --verify "refs/heads/$Branch^{commit}" 2>$null)
+    if ($LASTEXITCODE -ne 0) { return }
+
+    if ($pinnedResolved.Trim() -eq $branchResolved.Trim()) {
+        git -c windows.appendAtomically=false checkout $Branch
+        if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+    }
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -1091,15 +1120,11 @@ function Install-Repository {
                 }
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
-                # Precedence: Commit > Tag > Branch.  Commit and Tag check
-                # out as detached HEAD intentionally -- they're meant to be
-                # reproducible pins, not branches the user pulls into.
+                # Precedence: Commit > Tag > Branch. Commit pins still resolve
+                # to the exact SHA; Checkout-PinnedCommit reattaches only when
+                # the named branch already points at that SHA.
                 if ($Commit) {
-                    # Make sure we have the commit locally (a tag-less commit
-                    # SHA isn't always reachable from any one branch fetch).
-                    git -c windows.appendAtomically=false fetch origin $Commit
-                    git -c windows.appendAtomically=false checkout --detach $Commit
-                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                    Checkout-PinnedCommit -Commit $Commit -Branch $Branch
                 } elseif ($Tag) {
                     git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
                     git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
@@ -1294,11 +1319,7 @@ function Install-Repository {
         try {
             if ($Commit) {
                 Write-Info "Pinning to commit $Commit..."
-                git -c windows.appendAtomically=false fetch origin $Commit
-                git -c windows.appendAtomically=false checkout --detach $Commit
-                if ($LASTEXITCODE -ne 0) {
-                    throw "git checkout $Commit failed (exit $LASTEXITCODE)"
-                }
+                Checkout-PinnedCommit -Commit $Commit -Branch $Branch
             } elseif ($Tag) {
                 Write-Info "Pinning to tag $Tag..."
                 git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
