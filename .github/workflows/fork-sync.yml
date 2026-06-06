@@ -29,7 +29,8 @@ jobs:
           workflow_path=".github/workflows/fork-sync.yml"
           upstream_head="$(git rev-parse upstream/main)"
           current_parent="$(git rev-parse HEAD^ 2>/dev/null || true)"
-          if [[ "${current_parent}" == "${upstream_head}" ]]; then
+          changed_paths="$(git diff --name-only upstream/main..HEAD)"
+          if [[ "${current_parent}" == "${upstream_head}" && "${changed_paths}" == "${workflow_path}" ]]; then
             echo "main is already synced to upstream with the fork workflow preserved"
             exit 0
           fi
