@@ -26,7 +26,23 @@ jobs:
           git remote add upstream https://github.com/NousResearch/hermes-agent.git
           git fetch upstream main
           git checkout main
+          workflow_path=".github/workflows/fork-sync.yml"
+          upstream_head="$(git rev-parse upstream/main)"
+          current_parent="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          if [[ "${current_parent}" == "${upstream_head}" ]]; then
+            echo "main is already synced to upstream with the fork workflow preserved"
+            exit 0
+          fi
+          workflow_copy="$(mktemp)"
+          git show "HEAD:${workflow_path}" > "${workflow_copy}"
           git reset --hard upstream/main
+          mkdir -p "$(dirname "${workflow_path}")"
+          cp "${workflow_copy}" "${workflow_path}"
+          rm -f "${workflow_copy}"
+          git add "${workflow_path}"
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "ci: preserve fork sync workflow"
           git push --force-with-lease origin main
 
   rebase-check:
