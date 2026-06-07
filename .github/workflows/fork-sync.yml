@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Sync main
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
