@@ -413,6 +413,15 @@ get_command_link_display_dir() {
     fi
 }
 
+ensure_command_link_dir_on_path() {
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    case ":$PATH:" in
+        *":$link_dir:"*) ;;
+        *) export PATH="$link_dir:$PATH" ;;
+    esac
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -847,9 +856,14 @@ install_node() {
     local node_link_dir
     node_link_dir="$(get_command_link_dir)"
     mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    for tool in node npm npx; do
+        local target="$node_link_dir/$tool"
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            log_info "Keeping existing $target"
+        else
+            ln -s "$HERMES_HOME/node/bin/$tool" "$target"
+        fi
+    done
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -2544,6 +2558,7 @@ main() {
 
     detect_os
     resolve_install_layout
+    ensure_command_link_dir_on_path
     install_uv
     check_python
     check_git
