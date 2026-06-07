@@ -1328,7 +1328,11 @@ install_deps() {
                 else
                     log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
                     log_info "Hermes Agent itself does not require or retain root access."
-                    if prompt_yes_no "Install build tools?" "yes"; then
+                    local build_tools_default="yes"
+                    if [ "$NON_INTERACTIVE" = true ]; then
+                        build_tools_default="no"
+                    fi
+                    if prompt_yes_no "Install build tools?" "$build_tools_default"; then
                         sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                         log_success "Build tools installed"
                     fi
