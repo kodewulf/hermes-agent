@@ -2,65 +2,58 @@ name: Fork Sync
 
 on:
   schedule:
-    - cron: "15 5 * * *"
+    - cron: "15 */6 * * *"
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: write
 
+concurrency:
+  group: fork-sync-main
+  cancel-in-progress: false
+
 jobs:
   sync-main:
-    name: Force-sync main from upstream
-    if: github.event_name != 'pull_request'
+    name: Merge upstream into fork main
     runs-on: ubuntu-latest
     steps:
       - name: Sync main
         shell: bash
         run: |
           set -euo pipefail
-          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+
+          repo_url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          upstream_url="https://github.com/NousResearch/hermes-agent.git"
+
+          git clone "${repo_url}" repo
           cd repo
-          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "${upstream_url}"
+          git fetch origin main
           git fetch upstream main
           git checkout main
-          workflow_path=".github/workflows/fork-sync.yml"
+
+          before="$(git rev-parse HEAD)"
           upstream_head="$(git rev-parse upstream/main)"
-          current_parent="$(git rev-parse HEAD^ 2>/dev/null || true)"
-          changed_paths="$(git diff --name-only upstream/main..HEAD)"
-          if [[ "${current_parent}" == "${upstream_head}" && "${changed_paths}" == "${workflow_path}" ]]; then
-            echo "main is already synced to upstream with the fork workflow preserved"
+
+          echo "fork main before: ${before}"
+          echo "upstream main:    ${upstream_head}"
+
+          if git merge-base --is-ancestor "${upstream_head}" HEAD; then
+            echo "fork main already contains upstream main; nothing to sync"
             exit 0
           fi
-          workflow_copy="$(mktemp)"
-          git show "HEAD:${workflow_path}" > "${workflow_copy}"
-          git reset --hard upstream/main
-          mkdir -p "$(dirname "${workflow_path}")"
-          cp "${workflow_copy}" "${workflow_path}"
-          rm -f "${workflow_copy}"
-          git add "${workflow_path}"
-          git -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "ci: preserve fork sync workflow"
-          git push --force-with-lease origin main
 
-  rebase-check:
-    name: Rebase-check custom theme branch
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check custom-yaml-themes rebases
-        shell: bash
-        env:
-          BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || 'custom-yaml-themes' }}
-        run: |
-          set -euo pipefail
-          branch="${BRANCH}"
-          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
-          cd repo
-          git remote add upstream https://github.com/NousResearch/hermes-agent.git
-          git fetch origin "$branch"
-          git fetch upstream main
-          git checkout -B "$branch" "origin/$branch"
-          git rebase upstream/main
+          if ! git merge --no-edit upstream/main; then
+            echo "Upstream merge conflicted. Resolve conflicts on fork main manually, then rerun this workflow."
+            git status --short
+            exit 1
+          fi
+
+          after="$(git rev-parse HEAD)"
+          echo "fork main after:  ${after}"
+
+          git push origin main
