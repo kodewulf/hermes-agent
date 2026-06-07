@@ -1660,6 +1660,9 @@ copy_config_templates() {
 
     # Create ~/.hermes directory structure (config at top level, code in subdir)
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
+    # Fork installs are source-of-truth installs. Upstream sync happens in the
+    # fork repo, so host updates should not prompt to add the official upstream.
+    touch "$HERMES_HOME/.skip_upstream_prompt"
 
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then

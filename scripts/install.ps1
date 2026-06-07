@@ -1742,6 +1742,9 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
+    # Fork installs are source-of-truth installs. Upstream sync happens in the
+    # fork repo, so host updates should not prompt to add the official upstream.
+    New-Item -ItemType File -Force -Path "$HermesHome\.skip_upstream_prompt" | Out-Null
 
     
     # Create .env
