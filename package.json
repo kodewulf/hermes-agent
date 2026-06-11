@@ -10,7 +10,7 @@
     "web"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "postinstall": "node -e \"console.log('✅ Browser tools ready. Run: python run_agent.py --help')\"",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -36,7 +36,11 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
-    "lodash": "4.18.1"
+    "lodash": "4.18.1",
+    "concurrently": {
+      "shell-quote": "$shell-quote"
+    },
+    "shell-quote": "^1.8.4"
   },
   "engines": {
     "node": ">=20.0.0"

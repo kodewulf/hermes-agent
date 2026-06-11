@@ -20,6 +20,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -862,6 +863,96 @@ async def get_media(path: str):
 
     encoded = base64.b64encode(target.read_bytes()).decode("ascii")
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+
+
+_FS_READDIR_HIDDEN = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".cache",
+    ".next",
+    ".turbo",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "target",
+    "venv",
+}
+_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _resolve_fs_path(raw_path: str) -> Path:
+    if not str(raw_path or "").strip():
+        raise HTTPException(status_code=400, detail="Path is required")
+    try:
+        return Path(raw_path).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {exc}") from exc
+
+
+@app.get("/api/fs/read-dir")
+async def fs_read_dir(path: str):
+    """Return a directory listing from the dashboard host.
+
+    Remote desktop clients cannot read the backend machine's disk via Electron
+    IPC. This authenticated API mirrors the desktop local readDir shape so the
+    workspace tree follows the connected Hermes backend's cwd/filesystem.
+    """
+    target = _resolve_fs_path(path)
+    try:
+        entries = []
+        for entry in target.iterdir():
+            if entry.name in _FS_READDIR_HIDDEN:
+                continue
+            try:
+                is_directory = entry.is_dir()
+            except OSError:
+                is_directory = False
+            entries.append({"name": entry.name, "path": str(entry), "isDirectory": is_directory})
+        entries.sort(key=lambda item: (not item["isDirectory"], item["name"].lower()))
+        return {"entries": entries}
+    except OSError as exc:
+        return {"entries": [], "error": getattr(exc, "strerror", None) or exc.__class__.__name__}
+
+
+@app.get("/api/fs/read-file-data-url")
+async def fs_read_file_data_url(path: str):
+    target = _resolve_fs_path(path)
+    try:
+        if not target.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        size = target.stat().st_size
+        if size > _FS_DATA_URL_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="File is too large for preview")
+        mime_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        return {"data_url": f"data:{mime_type};base64,{encoded}"}
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail=getattr(exc, "strerror", None) or "Could not read file") from exc
+
+
+@app.get("/api/fs/git-root")
+async def fs_git_root(path: str):
+    target = _resolve_fs_path(path)
+    start = target if target.is_dir() else target.parent
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return {"root": None}
+    if proc.returncode != 0:
+        return {"root": None}
+    root = proc.stdout.strip()
+    return {"root": root or None}
 
 
 @app.get("/api/status")

@@ -5078,6 +5078,15 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
 })
 
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
+  const conn = await ensureBackend(primaryProfileKey())
+  if (conn.mode === 'remote') {
+    const body = await requestJsonForProfile(primaryProfileKey(), `/api/fs/read-file-data-url?path=${encodeURIComponent(String(filePath || ''))}`, 'GET')
+    if (!body?.data_url || typeof body.data_url !== 'string') {
+      throw new Error('Remote Hermes backend did not return file data.')
+    }
+    return body.data_url
+  }
+
   const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
     maxBytes: DATA_URL_READ_MAX_BYTES,
     purpose: 'File preview'
@@ -5392,6 +5401,15 @@ function disposeTerminalSession(id) {
 }
 
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
+  const conn = await ensureBackend(primaryProfileKey())
+  if (conn.mode === 'remote') {
+    const body = await requestJsonForProfile(primaryProfileKey(), `/api/fs/read-dir?path=${encodeURIComponent(String(dirPath || ''))}`, 'GET')
+    return {
+      entries: Array.isArray(body?.entries) ? body.entries : [],
+      error: typeof body?.error === 'string' ? body.error : undefined
+    }
+  }
+
   const resolved = path.resolve(String(dirPath || ''))
 
   if (!resolved) {
@@ -5419,6 +5437,12 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
 })
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
+  const conn = await ensureBackend(primaryProfileKey())
+  if (conn.mode === 'remote') {
+    const body = await requestJsonForProfile(primaryProfileKey(), `/api/fs/git-root?path=${encodeURIComponent(String(startPath || ''))}`, 'GET')
+    return typeof body?.root === 'string' && body.root ? body.root : null
+  }
+
   const input = String(startPath || '')
   const resolved = input.startsWith('file:') ? fileURLToPath(input) : path.resolve(input)
 

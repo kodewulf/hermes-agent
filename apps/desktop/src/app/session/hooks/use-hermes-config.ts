@@ -52,8 +52,13 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       const cwd = (config.terminal?.cwd ?? '').trim()
 
       if (cwd && cwd !== '.') {
-        setCurrentCwd(prev => prev || cwd)
-        void refreshProjectBranch($currentCwd.get() || cwd)
+        // Standalone/new-session view should reflect the connected backend's
+        // configured cwd. A remembered local workspace from a previous desktop
+        // mode (for example D:\\... on Windows) is invalid when the app is now
+        // pointed at a remote Linux gateway, and makes the file tree try to read
+        // the wrong machine. Active sessions keep their runtime cwd.
+        setCurrentCwd(prev => (activeSessionIdRef.current ? prev || cwd : cwd))
+        void refreshProjectBranch(activeSessionIdRef.current ? $currentCwd.get() || cwd : cwd)
       }
 
       const reasoning = (config.agent?.reasoning_effort ?? '').trim()
