@@ -502,15 +502,39 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // the palette, settings grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
 
-  const availableThemes = useMemo(
-    () =>
-      [...Object.values(BUILTIN_THEMES), ...Object.values(userThemes)].map(({ name, label, description }) => ({
-        name,
-        label,
-        description
-      })),
-    [userThemes]
-  )
+  const [customThemeVersion, setCustomThemeVersion] = useState(0)
+  const availableThemes = useMemo<Array<{ name: string; label: string; description: string; definition?: DesktopTheme }>>(() => {
+    const list: Array<{ name: string; label: string; description: string; definition?: DesktopTheme }> = SKIN_LIST.map(({ name, label, description }) => ({
+      name,
+      label,
+      description,
+    }))
+
+    // Add user-installed VS Code themes
+    for (const theme of Object.values(userThemes)) {
+      if (!list.some(t => t.name === theme.name)) {
+        list.push({
+          name: theme.name,
+          label: theme.label,
+          description: theme.description,
+        })
+      }
+    }
+
+    // Add custom filesystem YAML themes
+    for (const [name, definition] of CUSTOM_THEMES.entries()) {
+      if (!list.some(t => t.name === name)) {
+        list.push({
+          name,
+          label: definition.label,
+          description: definition.description,
+          definition,
+        })
+      }
+    }
+
+    return list
+  }, [userThemes, customThemeVersion])
 
   const [themeName, setThemeNameState] = useState(() =>
     typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
@@ -530,8 +554,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
-  const [availableThemes, setAvailableThemes] = useState(ALL_SKINS)
-  const [customThemeVersion, setCustomThemeVersion] = useState(0)
 
   const activeTheme = useMemo(() => {
     void customThemeVersion
@@ -584,17 +606,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           CUSTOM_THEMES.set(theme.name, theme)
         }
 
-        setAvailableThemes([
-          ...SKIN_LIST,
-          ...customThemes
-            .filter(theme => !BUILTIN_THEMES[theme.name])
-            .map(definition => ({
-              name: definition.name,
-              label: definition.label,
-              description: definition.description,
-              definition
-            }))
-        ])
+        // Custom themes have loaded, version update will trigger useMemo recompute.
         setCustomThemeVersion(version => version + 1)
       })
       .catch(() => undefined)

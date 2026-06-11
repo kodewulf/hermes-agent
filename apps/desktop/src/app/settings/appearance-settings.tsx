@@ -222,10 +222,6 @@ export function AppearanceSettings() {
                             )}
                           </div>
                         </button>
-                      </div>
-                    )
-                          </div>
-                        </button>
                         {removable && (
                           <button
                             aria-label={a.removeTheme}
