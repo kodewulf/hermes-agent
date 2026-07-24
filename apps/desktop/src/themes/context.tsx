@@ -9,18 +9,19 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
-import { load as loadYaml } from 'js-yaml'
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
+import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
+import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
-import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
-import { $userThemes, resolveTheme } from './user-themes'
+import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -35,10 +36,6 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
 const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
-const YAML_THEME_EXT = /\.ya?ml$/i
-
-declare const require: undefined | ((id: string) => unknown)
-declare const process: undefined | { env: Record<string, string | undefined> }
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -47,201 +44,8 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-type ThemeListItem = { name: string; label: string; description: string; definition?: DesktopTheme }
-type RawThemeRecord = Record<string, unknown>
-interface FsModule {
-  existsSync: (path: string) => boolean
-  readFileSync: (path: string, encoding: 'utf8') => string
-  readdirSync: (path: string) => string[]
-}
-
-const CUSTOM_THEMES = new Map<string, DesktopTheme>()
-interface PathModule {
-  basename: (path: string) => string
-  join: (...parts: string[]) => string
-}
-
-const titleCase = (name: string) =>
-  name
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-
-const stringValue = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null)
-
-function layerHex(value: unknown): string | null {
-  if (typeof value === 'string') {
-    return value
-  }
-
-  if (value && typeof value === 'object') {
-    return stringValue((value as Record<string, unknown>).hex)
-  }
-
-  return null
-}
-
-function themeFromRaw(raw: RawThemeRecord, fallbackName: string): DesktopTheme | null {
-  const name = stringValue(raw.name) || fallbackName
-  const colors = raw.colors && typeof raw.colors === 'object' ? (raw.colors as DesktopThemeColors) : null
-
-  if (colors) {
-    return {
-      name,
-      label: stringValue(raw.label) || titleCase(name),
-      description: stringValue(raw.description) || 'Custom dashboard theme',
-      colors,
-      darkColors: raw.darkColors && typeof raw.darkColors === 'object' ? (raw.darkColors as DesktopThemeColors) : undefined,
-      typography: raw.typography && typeof raw.typography === 'object' ? raw.typography : undefined
-    }
-  }
-
-  const palette = raw.palette && typeof raw.palette === 'object' ? (raw.palette as Record<string, unknown>) : null
-
-  if (!palette) {
-    return null
-  }
-
-  const background = layerHex(palette.background) || '#08081c'
-  const midground = layerHex(palette.midground) || '#8b80e8'
-  const foreground = layerHex(palette.foreground) || midground
-  const soft = mix(background, midground, 0.16)
-  const softer = mix(background, midground, 0.1)
-  const border = mix(background, midground, 0.34)
-
-  return {
-    name,
-    label: stringValue(raw.label) || titleCase(name),
-    description: stringValue(raw.description) || 'Custom dashboard theme',
-    colors: {
-      background,
-      foreground,
-      card: mix(background, midground, 0.08),
-      cardForeground: foreground,
-      muted: softer,
-      mutedForeground: mix(foreground, background, 0.42),
-      popover: mix(background, midground, 0.12),
-      popoverForeground: foreground,
-      primary: midground,
-      primaryForeground: readableOn(midground),
-      secondary: soft,
-      secondaryForeground: foreground,
-      accent: soft,
-      accentForeground: foreground,
-      border,
-      input: border,
-      ring: midground,
-      midground,
-      midgroundForeground: readableOn(midground),
-      composerRing: midground,
-      destructive: '#b03060',
-      destructiveForeground: '#fef2f2',
-      sidebarBackground: mix(background, '#000000', 0.18),
-      sidebarBorder: mix(background, midground, 0.22),
-      userBubble: soft,
-      userBubbleBorder: border
-    },
-    typography: raw.typography && typeof raw.typography === 'object' ? raw.typography : undefined
-  }
-}
-
-function lazyRequire<T = unknown>(id: string): T | null {
-  try {
-    if (typeof require === 'undefined') {
-      return null
-    }
-
-    return require(id) as T
-  } catch {
-    return null
-  }
-}
-
-function getYamlThemesDir(): string | null {
-  const path = lazyRequire<PathModule>('path')
-
-  if (!path || typeof process === 'undefined') {
-    return null
-  }
-
-  const hermesHome = process.env.HERMES_HOME || path.join(process.env.USERPROFILE || process.env.HOME || '', '.hermes')
-
-  return hermesHome ? path.join(hermesHome, 'dashboard-themes') : null
-}
-
-function loadYamlTheme(name: string): DesktopTheme | null {
-  if (RETIRED_SKINS.has(name)) {
-    return null
-  }
-
-  const registered = CUSTOM_THEMES.get(name)
-
-  if (registered) {
-    return registered
-  }
-
-  const fs = lazyRequire<FsModule>('fs')
-  const path = lazyRequire<PathModule>('path')
-  const yaml = lazyRequire<{ load: (source: string) => unknown }>('js-yaml')
-  const themesDir = getYamlThemesDir()
-
-  if (!fs || !path || !yaml || !themesDir) {
-    return null
-  }
-
-  const candidates = [path.join(themesDir, `${name}.yaml`), path.join(themesDir, `${name}.yml`)]
-  const themePath = candidates.find(candidate => fs.existsSync(candidate))
-
-  if (!themePath) {
-    return null
-  }
-
-  try {
-    const parsed = yaml.load(fs.readFileSync(themePath, 'utf8')) as RawThemeRecord | null
-
-    return parsed && typeof parsed === 'object' ? themeFromRaw(parsed, name) : null
-  } catch {
-    return null
-  }
-}
-
-function listYamlThemes(): ThemeListItem[] {
-  const fs = lazyRequire<FsModule>('fs')
-  const path = lazyRequire<PathModule>('path')
-  const themesDir = getYamlThemesDir()
-
-  if (!fs || !path || !themesDir || !fs.existsSync(themesDir)) {
-    return []
-  }
-
-  try {
-    return fs
-      .readdirSync(themesDir)
-      .filter(file => YAML_THEME_EXT.test(file))
-      .map(file => path.basename(file).replace(YAML_THEME_EXT, ''))
-      .filter(name => !RETIRED_SKINS.has(name))
-      .map(name => {
-        const definition = loadYamlTheme(name) ?? undefined
-
-        return {
-          name,
-          label: definition?.label || titleCase(name),
-          description: definition?.description || 'Custom dashboard theme',
-          definition
-        }
-      })
-  } catch {
-    return []
-  }
-}
-
-const resolveThemeWithYaml = (name: string): DesktopTheme | undefined => {
-  return resolveTheme(name) ?? loadYamlTheme(name) ?? undefined
-}
-
 const normalizeSkin = (name: string | null): string =>
-  name && resolveThemeWithYaml(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
@@ -312,7 +116,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
 
 /** Returns the seed palette for a given skin + mode (no overrides applied). */
 export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
-  const seed = resolveThemeWithYaml(skinName) ?? nousTheme
+  const seed = resolveTheme(skinName) ?? nousTheme
 
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
@@ -322,7 +126,7 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
 }
 
 function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
-  const seed = resolveThemeWithYaml(skinName) ?? nousTheme
+  const seed = resolveTheme(skinName) ?? nousTheme
 
   return {
     ...seed,
@@ -355,6 +159,12 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
 // the boot-time paint.
+// styles.css --theme-neutral-chrome — keep in sync.
+const NEUTRAL_CHROME = { light: '#f3f3f3', dark: '#0d0d0e' } as const
+
+const chromeBackground = (background: string, isDark: boolean) =>
+  mix(background, NEUTRAL_CHROME[isDark ? 'dark' : 'light'], isDark ? 0.26 : 0.08)
+
 const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-chrome': isDark ? '74%' : '92%',
   '--theme-mix-sidebar': '100%',
@@ -411,11 +221,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-destructive-foreground': c.destructiveForeground,
     '--dt-sidebar-border': c.sidebarBorder ?? c.border,
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
-    '--dt-base-size': typo.baseSize ?? DEFAULT_TYPOGRAPHY.baseSize ?? '1rem',
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
-    '--dt-letter-spacing': typo.letterSpacing ?? DEFAULT_TYPOGRAPHY.letterSpacing ?? '0',
-    '--dt-line-height': String(typo.lineHeight ?? DEFAULT_TYPOGRAPHY.lineHeight ?? 1.5),
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
@@ -423,10 +230,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
+  const chromeBg = chromeBackground(c.background, isDark)
+
   window.hermesDesktop?.setTitleBarTheme?.({
-    background: c.background,
+    background: chromeBg,
     foreground: c.foreground
   })
+
+  // Raw (non-JSON) keys read by the inline pre-paint script in index.html —
+  // they let a brand-new window paint the themed background on its very first
+  // frame, before this module has even loaded.
+  try {
+    window.localStorage.setItem('hermes-boot-background', chromeBg)
+    window.localStorage.setItem('hermes-boot-color-scheme', rendered)
+  } catch {
+    // Storage may be unavailable (private mode / quota); the inline script
+    // falls back to prefers-color-scheme.
+  }
 
   if (typo.fontUrl && !INJECTED_FONT_URLS.has(typo.fontUrl)) {
     const link = document.createElement('link')
@@ -438,13 +258,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   }
 }
 
+// Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
+// (macOS vibrancy material, titlebar, pre-paint background) matches the app
+// theme instead of the OS appearance. An explicit light/dark pick is forced;
+// 'system' stays 'system' so prefers-color-scheme keeps tracking the OS.
+const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
+  window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
+
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
   const profile = readBootProfileKey()
-  const resolved = resolveMode(modePref.resolve(profile))
-  applyTheme(deriveTheme(skinPref.resolve(profile), resolved), resolved)
+  const pref = modePref.resolve(profile)
+  const resolved = resolveMode(pref)
+  const theme = deriveTheme(skinPref.resolve(profile), resolved)
+  applyTheme(theme, resolved)
+  syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -462,24 +292,12 @@ interface ThemeContextValue {
    * this so it matches what's on screen instead of inverting.
    */
   renderedMode: 'light' | 'dark'
-  availableThemes: Array<{ name: string; label: string; description: string; definition?: DesktopTheme }>
+  availableThemes: Array<{ name: string; label: string; description: string }>
   setTheme: (name: string) => void
   setMode: (mode: ThemeMode) => void
 }
 
-const SKIN_LIST: ThemeListItem[] = BUILTIN_THEME_LIST.map(definition => ({
-  name: definition.name,
-  label: definition.label,
-  description: definition.description,
-  definition
-}))
-
-const YAML_THEME_LIST: ThemeListItem[] = listYamlThemes()
-
-export const ALL_SKINS: ThemeListItem[] = [
-  ...SKIN_LIST,
-  ...YAML_THEME_LIST.filter(theme => !BUILTIN_THEMES[theme.name])
-]
+const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
 
 const ThemeContext = createContext<ThemeContextValue>({
   theme: nousTheme,
@@ -498,43 +316,24 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // behavior is unchanged.
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
 
-  // Built-ins + user-installed themes. Reactive so an import shows up live in
-  // the palette, settings grid, and `/skin` without a reload.
+  // Built-ins + user-installed + registry-contributed themes. Reactive so an
+  // import or a plugin registration shows up live in the palette, settings
+  // grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
+  const backendThemes = useStore($backendThemes)
+  const registryVersion = useStore($registryVersion)
 
-  const [customThemeVersion, setCustomThemeVersion] = useState(0)
-  const availableThemes = useMemo<Array<{ name: string; label: string; description: string; definition?: DesktopTheme }>>(() => {
-    const list: Array<{ name: string; label: string; description: string; definition?: DesktopTheme }> = SKIN_LIST.map(({ name, label, description }) => ({
-      name,
-      label,
-      description,
-    }))
-
-    // Add user-installed VS Code themes
-    for (const theme of Object.values(userThemes)) {
-      if (!list.some(t => t.name === theme.name)) {
-        list.push({
-          name: theme.name,
-          label: theme.label,
-          description: theme.description,
-        })
-      }
-    }
-
-    // Add custom filesystem YAML themes
-    for (const [name, definition] of CUSTOM_THEMES.entries()) {
-      if (!list.some(t => t.name === name)) {
-        list.push({
-          name,
-          label: definition.label,
-          description: definition.description,
-          definition,
-        })
-      }
-    }
-
-    return list
-  }, [userThemes, customThemeVersion])
+  const availableThemes = useMemo(
+    () =>
+      listAllThemes().map(({ name, label, description }) => ({
+        name,
+        label,
+        description
+      })),
+    // userThemes + backendThemes + registryVersion ARE listAllThemes' reactivity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [userThemes, backendThemes, registryVersion]
+  )
 
   const [themeName, setThemeNameState] = useState(() =>
     typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
@@ -555,66 +354,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
 
-  const activeTheme = useMemo(() => {
-    void customThemeVersion
-
-    return deriveTheme(themeName, resolvedMode)
-  }, [themeName, resolvedMode, customThemeVersion])
+  const activeTheme = useMemo(
+    () => deriveTheme(themeName, resolvedMode),
+    // deriveTheme resolves its seed through the merged registry, so the theme
+    // stores are its reactivity too — an in-place palette edit of the ACTIVE
+    // skin (live theme authoring) must repaint, not just a name switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themeName, resolvedMode, userThemes, backendThemes, registryVersion]
+  )
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
-  const renderedMode = useMemo(
-    () => renderedModeFor(activeTheme.colors, resolvedMode),
-    [activeTheme, resolvedMode]
-  )
+  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
 
-  useEffect(() => {
-    let cancelled = false
-
-    window.hermesDesktop
-      ?.listDashboardThemes?.()
-      .then(themes => {
-        if (cancelled) {
-          return
-        }
-
-        const customThemes = themes
-          .map((theme, index) => {
-            if (!theme || typeof theme !== 'object') {
-              return null
-            }
-
-            const { name, source } = theme as { name?: unknown; source?: unknown }
-            const fallbackName = stringValue(name) || `custom-${index}`
-
-            if (typeof source === 'string') {
-              try {
-                const parsed = loadYaml(source)
-
-                return parsed && typeof parsed === 'object' ? themeFromRaw(parsed as RawThemeRecord, fallbackName) : null
-              } catch {
-                return null
-              }
-            }
-
-            return themeFromRaw(theme as RawThemeRecord, fallbackName)
-          })
-          .filter((theme): theme is DesktopTheme => theme !== null && !RETIRED_SKINS.has(theme.name))
-
-        for (const theme of customThemes) {
-          CUSTOM_THEMES.set(theme.name, theme)
-        }
-
-        // Custom themes have loaded, version update will trigger useMemo recompute.
-        setCustomThemeVersion(version => version + 1)
-      })
-      .catch(() => undefined)
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  // Keep the native window appearance pinned to the app theme (vibrancy
+  // material, titlebar, new-window pre-paint background).
+  useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
   // stay stable across profile switches).
@@ -631,6 +387,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     modePref.assign(liveProfile(), next)
   }, [])
 
+  // Drain a backend-driven skin switch (Hermes authoring/activating a skin from a
+  // prompt, or `/skin` on another surface). setTheme persists it per profile, so
+  // the choice sticks like any manual pick.
+  const pendingSkin = useStore($pendingSkinApply)
+
+  useEffect(() => {
+    if (pendingSkin) {
+      setTheme(pendingSkin)
+      $pendingSkinApply.set(null)
+    }
+  }, [pendingSkin, setTheme])
+
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.
 
@@ -643,12 +411,3 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 }
 
 export const useTheme = (): ThemeContextValue => useContext(ThemeContext)
-
-/** Sync the desktop skin with the active Hermes backend theme on connect. */
-export function useSyncThemeFromBackend(backendThemeName: string | undefined, setTheme: (name: string) => void) {
-  useEffect(() => {
-    if (backendThemeName && !RETIRED_SKINS.has(backendThemeName)) {
-      setTheme(backendThemeName)
-    }
-  }, [backendThemeName, setTheme])
-}
