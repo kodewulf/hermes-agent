@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "node -e \"console.log('✅ Browser tools ready. Run: python run_agent.py --help')\"",
+    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -40,7 +40,6 @@
   },
   "overrides": {
     "lodash": "4.18.1",
-    "shell-quote": "^1.8.4",
     "yauzl": "^3.3.1"
   },
   "engines": {
